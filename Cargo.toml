@@ -1,0 +1,67 @@
+[package]
+name = "vbitmap"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+authors = ["Mauro Sardara"]
+license = "MIT"
+repository = "https://github.com/msardara/vbitmap"
+description = "Fast growable bitmap over generic machine words, with zero-cost borrowed views"
+keywords = ["bitmap", "bitset", "bitvec"]
+categories = ["data-structures"]
+exclude = ["scripts", "justfile", "BENCHMARKS.md"]
+
+[features]
+# With no features the crate uses `std` and everything is available.
+# `no_std` makes it `#![no_std]`: only the borrowed `BitSlice` API, `Ones`
+# and `Word` remain (pure `core`).
+no_std = []
+# Only meaningful together with `no_std`: add the growable `Bitmap`, text
+# formatting and parsing on top of the `alloc` crate (needs a global
+# allocator in the final binary).
+alloc = []
+# `Serialize` for `BitSlice` and `ArrayBitmap`, `Deserialize` for `Bitmap`
+# and `ArrayBitmap`, as little-endian bytes. Works with `no_std` and
+# `no_std` + `alloc` too.
+serde = ["dep:serde"]
+
+[dependencies]
+serde = { version = "1", optional = true, default-features = false }
+
+[dev-dependencies]
+serde_json = "1"
+criterion = { version = "0.5", default-features = false, features = [
+	"cargo_bench_support",
+] }
+fixedbitset = "0.5"
+# The crates `benches/compare.rs` measures vbitmap against.
+bit-vec = "0.10"
+bit-set = "0.11"
+bitvec = "1"
+bitmaps = "3"
+bv = "0.11"
+
+[[bench]]
+name = "bitmap"
+harness = false
+
+[[bench]]
+name = "compare"
+harness = false
+
+# The `no_std` example is a real `#![no_std]` binary, which needs panic=abort.
+[[example]]
+name = "no_std"
+required-features = ["no_std"]
+test = false
+
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+
+[profile.bench]
+inherits = "release"
