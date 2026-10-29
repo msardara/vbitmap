@@ -1,108 +1,14 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 use crate::{Ones, Word};
 
-/// First non-zero word and its index. Bitmaps shorter than eight words are
-/// scanned directly; longer ones eight words per step so the OR-reduction
-/// vectorizes.
-#[inline]
-pub(crate) fn first_nonzero<W: Word>(w: &[W]) -> Option<(usize, W)> {
-    let mut i = 0;
-    if w.len() >= 8 {
-        while i + 8 <= w.len() {
-            let c = &w[i..i + 8];
-            let any = c[0] | c[1] | c[2] | c[3] | c[4] | c[5] | c[6] | c[7];
-            if any != W::ZERO {
-                break;
-            }
-            i += 8;
-        }
-    }
-    while i < w.len() {
-        let x = w[i];
-        if x != W::ZERO {
-            return Some((i, x));
-        }
-        i += 1;
-    }
-    None
-}
-
-/// First word that is not all ones, with its index; same scan as
-/// [`first_nonzero`].
-#[inline]
-pub(crate) fn first_not_ones<W: Word>(w: &[W]) -> Option<(usize, W)> {
-    let mut i = 0;
-    if w.len() >= 8 {
-        while i + 8 <= w.len() {
-            let c = &w[i..i + 8];
-            let all = c[0] & c[1] & c[2] & c[3] & c[4] & c[5] & c[6] & c[7];
-            if all != W::ONES {
-                break;
-            }
-            i += 8;
-        }
-    }
-    while i < w.len() {
-        let x = w[i];
-        if x != W::ONES {
-            return Some((i, x));
-        }
-        i += 1;
-    }
-    None
-}
-
-/// Length of `w` without trailing zero words, scanning backwards eight words
-/// per step.
-#[inline]
-pub(crate) fn nonzero_len<W: Word>(w: &[W]) -> usize {
-    if w.len() < 8 {
-        return w.iter().rposition(|&x| x != W::ZERO).map_or(0, |p| p + 1);
-    }
-    let mut end = w.len();
-    while end >= 8 {
-        let c = &w[end - 8..end];
-        let any = c[0] | c[1] | c[2] | c[3] | c[4] | c[5] | c[6] | c[7];
-        if any != W::ZERO {
-            break;
-        }
-        end -= 8;
-    }
-    while end > 0 && w[end - 1] == W::ZERO {
-        end -= 1;
-    }
-    end
-}
-
-/// `w` unchanged, but on x86-64 kept in a register for the single-bit
-/// update that follows. Left alone, LLVM folds `*w = *w | bit` into a
-/// memory-destination `or` and builds `!bit` for a clear with a two-uop
-/// `rol`, both of which cost throughput; with the load kept apart it picks a
-/// one-uop register `bts` / `btr` and a plain store. The empty `asm!` emits
-/// no instruction.
-#[inline(always)]
-pub(crate) fn in_register<W: Word>(w: W) -> W {
-    #[cfg(target_arch = "x86_64")]
-    if W::BITS == 64 {
-        let mut v = w.to_u64();
-        // SAFETY: an empty template; it only claims to read and write `v`.
-        unsafe {
-            core::arch::asm!("/* {v} */", v = inout(reg) v, options(pure, nomem, nostack, preserves_flags));
-        }
-        return W::from_u64(v);
-    }
-    w
-}
-
-/// On aarch64, bitmaps this short (in words) skip redundant single-bit stores, see
-/// [`BitSlice::set`].
-const TINY_WORDS: usize = 8;
-
 /// Borrowed bitmap, an unsized view over `[W]`.
 ///
 /// Get one with [`BitSlice::new`] / [`BitSlice::new_mut`] or by
 /// dereferencing a [`Bitmap`](crate::Bitmap). Out of range reads return
-/// zero unless the method says otherwise; nothing here allocates.
+/// zero unless the method says otherwise; nothing here allocates. Writes that
+/// need a bit outside the view panic, and fixed-length shifts discard bits
+/// that move outside it. These are the fixed-size counterparts to the
+/// growable or trimming methods on [`Bitmap`](crate::Bitmap).
 #[repr(transparent)]
 pub struct BitSlice<W: Word = usize> {
     pub(crate) words: [W],
@@ -112,7 +18,7 @@ impl<W: Word> BitSlice<W> {
     /// The words without trailing zero words.
     #[inline]
     fn trimmed(&self) -> &[W] {
-        &self.words[..nonzero_len(&self.words)]
+        &self.words[..crate::arch::nonzero_len(&self.words)]
     }
 
     /// # Examples
@@ -228,32 +134,7 @@ impl<W: Word> BitSlice<W> {
     /// ```
     #[inline]
     pub fn is_zero(&self) -> bool {
-        if self.words.len() < 8 {
-            // 4 to 7 64-bit words on an AVX2 build: two overlapping 256-bit
-            // loads and one test instead of a branch per word.
-            #[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
-            if W::BITS == 64 && self.words.len() >= 4 {
-                // SAFETY: at least four words, so both 32-byte loads are inside.
-                return unsafe {
-                    crate::arch::all_zero_4_to_8(
-                        self.words.as_ptr().cast::<u64>(),
-                        self.words.len(),
-                    )
-                };
-            }
-            // Short: a plain loop, chunking would only add setup.
-            return self.words.iter().all(|&x| x == W::ZERO);
-        }
-        // Long: a loop with an early exit is not vectorized. OR eight words
-        // with no branch (SIMD) and test once per chunk instead.
-        let mut chunks = self.words.chunks_exact(8);
-        for c in &mut chunks {
-            let any = c[0] | c[1] | c[2] | c[3] | c[4] | c[5] | c[6] | c[7];
-            if any != W::ZERO {
-                return false;
-            }
-        }
-        chunks.remainder().iter().all(|&x| x == W::ZERO)
+        crate::arch::is_zero(&self.words)
     }
 
     /// Bit `i`. A bit past the end reads as zero.
@@ -278,24 +159,7 @@ impl<W: Word> BitSlice<W> {
     /// ```
     #[inline]
     pub fn get(&self, i: usize) -> bool {
-        // x86-64: compare `i` with the length in bits rather than `i / BITS`
-        // with the length in words. In a vectorized loop of reads (a masked
-        // gather) the in-range mask then no longer waits for the shift; the
-        // check is exact unless the length in bits overflows, which the
-        // outer test sends to the general path.
-        #[cfg(target_arch = "x86_64")]
-        if self.words.len() <= usize::MAX / W::BITS {
-            if i >= self.words.len() * W::BITS {
-                return false;
-            }
-            // SAFETY: i < len * BITS, so i / BITS < len.
-            let w = unsafe { *self.words.get_unchecked(i / W::BITS) };
-            return (w >> (i % W::BITS)) & W::ONE != W::ZERO;
-        }
-        match self.words.get(i / W::BITS) {
-            Some(&w) => (w >> (i % W::BITS)) & W::ONE != W::ZERO,
-            None => false,
-        }
+        crate::arch::get(&self.words, i)
     }
 
     /// Bit `i`, or `None` if `i` is out of range.
@@ -364,29 +228,17 @@ impl<W: Word> BitSlice<W> {
     /// ```
     #[inline]
     pub fn set(&mut self, i: usize) {
-        let few = self.words.len() <= TINY_WORDS;
-        let w = &mut self.words[i / W::BITS];
-        let new = in_register(*w) | W::bit(i % W::BITS);
-        // On aarch64, in a bitmap of a few words consecutive writes keep
-        // hitting the same word, and every unconditional store makes the next
-        // load of it wait (store-to-load forwarding): skipping the store when
-        // nothing changes removes that chain. In a larger bitmap the outcome
-        // is unpredictable and the branch costs more than the store saves; on
-        // x86-64 the plain store is faster at every size.
-        if cfg!(not(target_arch = "aarch64")) || !few || new != *w {
-            *w = new;
-        }
+        crate::arch::set_bit(&mut self.words, i)
     }
 
     /// Clear bit `i`. Panics if out of range, never grows or trims.
+    ///
+    /// On a [`Bitmap`](crate::Bitmap), the inherent growing
+    /// [`Bitmap::unset`](crate::Bitmap::unset) takes precedence; borrow its
+    /// words as a `&mut BitSlice` to call this fixed-length version.
     #[inline]
     pub fn unset(&mut self, i: usize) {
-        let few = self.words.len() <= TINY_WORDS;
-        let w = &mut self.words[i / W::BITS];
-        let new = in_register(*w) & !W::bit(i % W::BITS);
-        if cfg!(not(target_arch = "aarch64")) || !few || new != *w {
-            *w = new;
-        }
+        crate::arch::unset_bit(&mut self.words, i)
     }
 
     /// Set every bit yielded by `bits`. Panics at the first index out of
@@ -564,76 +416,7 @@ impl<W: Word> BitSlice<W> {
     /// ```
     #[inline]
     pub fn first_set(&self) -> Option<usize> {
-        // On aarch64 the long-bitmap scan is kept out of line so that the
-        // short case stays a few instructions in its caller. Elsewhere the
-        // call costs more than it saves, so it is inlined.
-        #[cfg(target_arch = "aarch64")]
-        if self.words.len() >= 8 {
-            return self.first_set_long();
-        }
-        // Short bitmap: the shortest possible scan, carrying the bit offset.
-        #[cfg(not(target_arch = "aarch64"))]
-        if self.words.len() >= 8 {
-            let (p, x) = first_nonzero(&self.words)?;
-            return Some(p * W::BITS + x.trailing_zeros() as usize);
-        }
-        // aarch64: test two words per branch with one paired load.
-        #[cfg(target_arch = "aarch64")]
-        {
-            let mut off = 0;
-            let mut pairs = self.words.chunks_exact(2);
-            for c in &mut pairs {
-                if (c[0] | c[1]) != W::ZERO {
-                    let (x, skip) = if c[0] != W::ZERO {
-                        (c[0], 0)
-                    } else {
-                        (c[1], W::BITS)
-                    };
-                    return Some(off + skip + x.trailing_zeros() as usize);
-                }
-                off += 2 * W::BITS;
-            }
-            match pairs.remainder() {
-                [x] if *x != W::ZERO => Some(off + x.trailing_zeros() as usize),
-                _ => None,
-            }
-        }
-        #[cfg(not(target_arch = "aarch64"))]
-        {
-            let mut off = 0;
-            // 64-bit words on an AVX2 build: test four words with one load.
-            #[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
-            let rest = if W::BITS == 64 && self.words.len() >= 4 {
-                // SAFETY: at least four words (32 bytes) are readable.
-                if let Some(lane) = unsafe {
-                    crate::arch::first_nonzero_lane_of_4(self.words.as_ptr().cast::<u64>())
-                } {
-                    return Some(lane * 64 + self.words[lane].trailing_zeros() as usize);
-                }
-                off = 4 * W::BITS;
-                &self.words[4..]
-            } else {
-                &self.words[..]
-            };
-            #[cfg(not(all(target_arch = "x86_64", target_feature = "avx2")))]
-            let rest = &self.words[..];
-            for &x in rest {
-                if x != W::ZERO {
-                    return Some(off + x.trailing_zeros() as usize);
-                }
-                off += W::BITS;
-            }
-            None
-        }
-    }
-
-    /// `first_set` for 8 or more words, scanning eight words per step.
-    #[cfg(target_arch = "aarch64")]
-    #[cold]
-    #[inline(never)]
-    fn first_set_long(&self) -> Option<usize> {
-        let (p, x) = first_nonzero(&self.words)?;
-        Some(p * W::BITS + x.trailing_zeros() as usize)
+        crate::arch::first_set(&self.words)
     }
 
     /// Highest set bit.
@@ -657,7 +440,7 @@ impl<W: Word> BitSlice<W> {
                 .find(|(_, x)| **x != W::ZERO)
                 .map(|(p, &x)| (p, x))?
         } else {
-            let p = nonzero_len(&self.words).checked_sub(1)?;
+            let p = crate::arch::nonzero_len(&self.words).checked_sub(1)?;
             // SAFETY: nonzero_len <= len, so p < len.
             (p, unsafe { *self.words.get_unchecked(p) })
         };
@@ -677,7 +460,7 @@ impl<W: Word> BitSlice<W> {
     /// ```
     #[inline]
     pub fn first_clear(&self) -> usize {
-        match first_not_ones(&self.words) {
+        match crate::arch::first_not_ones(&self.words) {
             Some((p, x)) => p * W::BITS + (!x).trailing_zeros() as usize,
             None => self.len_bits(),
         }
@@ -695,19 +478,7 @@ impl<W: Word> BitSlice<W> {
     /// ```
     #[inline]
     pub fn count_set_bits(&self) -> usize {
-        #[cfg(target_arch = "aarch64")]
-        if self.words.len() >= 8 {
-            // SAFETY: the words are plain integers: viewing their memory as
-            // bytes is always valid, and u8 needs no alignment.
-            let bytes = unsafe {
-                core::slice::from_raw_parts(
-                    self.words.as_ptr().cast::<u8>(),
-                    core::mem::size_of_val(&self.words),
-                )
-            };
-            return crate::arch::popcount_bytes(bytes);
-        }
-        self.words.iter().map(|x| x.count_ones() as usize).sum()
+        crate::arch::count_set_bits(&self.words)
     }
 
     /// First set bit at or after `i`.
@@ -735,7 +506,7 @@ impl<W: Word> BitSlice<W> {
         if t != W::ZERO {
             return Some(i0 * W::BITS + t.trailing_zeros() as usize);
         }
-        let (p, x) = first_nonzero(&w[i0 + 1..])?;
+        let (p, x) = crate::arch::first_nonzero(&w[i0 + 1..])?;
         Some((i0 + 1 + p) * W::BITS + x.trailing_zeros() as usize)
     }
 
@@ -763,7 +534,7 @@ impl<W: Word> BitSlice<W> {
         if t != W::ZERO {
             return i0 * W::BITS + t.trailing_zeros() as usize;
         }
-        match first_not_ones(&w[i0 + 1..]) {
+        match crate::arch::first_not_ones(&w[i0 + 1..]) {
             Some((p, x)) => (i0 + 1 + p) * W::BITS + (!x).trailing_zeros() as usize,
             None => w.len() * W::BITS,
         }

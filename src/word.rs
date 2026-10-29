@@ -60,6 +60,8 @@ pub trait Word:
     fn trailing_zeros(self) -> u32;
     /// Number of clear bits above the highest set bit (`BITS` for zero).
     fn leading_zeros(self) -> u32;
+    /// Reverse the order of bits in this word.
+    fn reverse_bits(self) -> Self;
     /// `self - rhs`, wrapping on underflow.
     fn wrapping_sub(self, rhs: Self) -> Self;
     /// Truncating conversion from `u64`.
@@ -101,6 +103,7 @@ macro_rules! impl_word {
             #[inline(always)] fn count_ones(self) -> u32 { <$t>::count_ones(self) }
             #[inline(always)] fn trailing_zeros(self) -> u32 { <$t>::trailing_zeros(self) }
             #[inline(always)] fn leading_zeros(self) -> u32 { <$t>::leading_zeros(self) }
+            #[inline(always)] fn reverse_bits(self) -> Self { <$t>::reverse_bits(self) }
             #[inline(always)] fn wrapping_sub(self, rhs: Self) -> Self { <$t>::wrapping_sub(self, rhs) }
             #[inline(always)] fn from_u64(v: u64) -> Self { v as $t }
             #[inline(always)] fn to_u64(self) -> u64 { self as u64 }

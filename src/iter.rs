@@ -2,6 +2,8 @@
 use core::iter::FusedIterator;
 
 use crate::Word;
+#[cfg(target_arch = "x86_64")]
+use crate::arch::{opaque, place_loop};
 
 /// Iterator over set bits in increasing order, see
 /// [`BitSlice::iter_ones`](crate::BitSlice::iter_ones).
@@ -227,18 +229,6 @@ impl<W: Word> Ones<'_, W> {
     }
 }
 
-/// `x`, hidden from the optimizer: the position is computed before it is
-/// handed to the fold closure, off the closure's dependency chain.
-#[cfg(target_arch = "x86_64")]
-#[inline(always)]
-fn opaque(mut x: usize) -> usize {
-    // SAFETY: an empty asm block that only names a register.
-    unsafe {
-        core::arch::asm!("/* {0} */", inout(reg) x, options(pure, nomem, nostack, preserves_flags))
-    };
-    x
-}
-
 /// Feed the set bits of one word, in increasing order, to `f`.
 #[inline(always)]
 pub(crate) fn decode_word<W: Word, B, F: FnMut(B, usize) -> B>(
@@ -311,30 +301,6 @@ fn fold_dense<W: Word, B, F: FnMut(B, usize) -> B>(
 }
 
 impl<W: Word> FusedIterator for Ones<'_, W> {}
-
-/// Starts the code that follows `OFFSET` bytes past a 64-byte boundary,
-/// jumping over the padding. A short loop's speed depends on where it falls
-/// relative to the 64-byte fetch blocks, and the linker places it wherever
-/// its caller ends up; pinned, it no longer moves with unrelated code. The
-/// offsets come from measuring the four 16-byte positions on a Xeon 6737P:
-/// for `fold_short` 0 was about 5% slower on a sparse 256-bit bitmap than
-/// the others, for the long path 32 was the fastest on both dense and sparse
-/// bitmaps (the others up to 26% slower on a dense 4096-bit one).
-#[cfg(target_arch = "x86_64")]
-#[inline(always)]
-fn place_loop<const OFFSET: usize>() {
-    // SAFETY: jumps over padding that is never executed.
-    unsafe {
-        core::arch::asm!(
-            "jmp 2f",
-            ".p2align 6, 0xcc",
-            ".skip {offset}, 0xcc",
-            "2:",
-            offset = const OFFSET,
-            options(nomem, nostack, preserves_flags)
-        )
-    };
-}
 
 /// Iterator over the clear bits within
 /// [`len_bits`](crate::BitSlice::len_bits), in increasing order, see

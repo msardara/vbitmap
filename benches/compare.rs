@@ -489,6 +489,24 @@ fn get_field24(c: &mut Criterion) {
     }
 }
 
+fn reverse(c: &mut Criterion) {
+    for n in SIZES {
+        let bits = make_bits(n, 2, 13);
+        let mut a = vb(&bits);
+        let mut b = bvc(&bits);
+        let mut grp = c.benchmark_group("reverse");
+        add!(grp, "vbitmap", n, {
+            black_box(&mut a).reverse();
+            black_box(a.as_words()[0])
+        });
+        add!(grp, "bitvec", n, {
+            black_box(&mut b).reverse();
+            black_box(b.as_raw_slice()[0])
+        });
+        grp.finish();
+    }
+}
+
 fn main() {
     if let Some(n) = std::env::var("LAYOUT_SHIFT")
         .ok()
@@ -510,5 +528,6 @@ fn main() {
     write_batch(&mut c);
     set_range(&mut c);
     get_field24(&mut c);
+    reverse(&mut c);
     c.final_summary();
 }

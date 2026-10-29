@@ -29,6 +29,21 @@ compare ratios across machines, not nanoseconds.
 * arm64 (Apple M4), macOS, rustc 1.94.0, default release flags (no target-cpu=native), not pinned
 * x86-64 (Intel Xeon 6737P, Granite Rapids) in a Linux VM, one core pinned with taskset, -C target-cpu=native
 
+## Additional operation checked on Apple M4
+
+Whole-bitmap reversal was added after the cross-machine run above. These are
+Criterion medians, taking the minimum from three runs with different heap
+layouts; they are not included in the cross-machine score. The inputs contain
+whole machine words, so both libraries reverse the same number of bits.
+
+| operation (ns per call) | 256 bits | 4096 bits | 262144 bits |
+|---|---:|---:|---:|
+| vbitmap | **3.5** | **16.9** | **1,022** |
+| bitvec | 194 (55.0x) | 3,507 (207.8x) | 724,530 (709.4x) |
+
+`vbitmap` reverses packed words with each word's `reverse_bits` operation;
+`bitvec`'s current implementation swaps individual bits.
+
 
 ## arm64 (Apple M4)
 

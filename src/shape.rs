@@ -4,7 +4,7 @@
 
 use alloc::vec::Vec;
 
-use crate::slice::in_register;
+use crate::arch::in_register;
 use crate::storage::AlignedWords;
 use crate::{BitSlice, Bitmap, Word};
 

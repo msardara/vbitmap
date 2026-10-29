@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! Single-bit and whole-bitmap updates and counts that need no allocation:
-//! toggle, complement, fill, counts over a range, rank and select.
+//! toggle, complement, fill, reverse, counts over a range, rank and select.
 
-use crate::slice::in_register;
+use crate::arch::in_register;
 use crate::{BitSlice, Word};
 
 impl<W: Word> BitSlice<W> {
@@ -74,6 +74,41 @@ impl<W: Word> BitSlice<W> {
     #[inline]
     pub fn set_all(&mut self) {
         self.words.fill(W::ONES);
+    }
+
+    /// Reverse the order of all stored bits in place.
+    ///
+    /// Bit zero becomes the highest stored bit, and the highest stored bit
+    /// becomes bit zero. The operation preserves the number of words and
+    /// allocates nothing. On a [`Bitmap`](crate::Bitmap), this reverses its
+    /// currently stored words, including zero bits in the final word. It does
+    /// not use or change the bitmap's allocation capacity.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use vbitmap::BitSlice;
+    ///
+    /// let mut words = [0b1001u8, 0b0000_0010];
+    /// BitSlice::new_mut(&mut words).reverse();
+    /// assert_eq!(words, [0b0100_0000, 0b1001_0000]);
+    /// ```
+    #[inline]
+    pub fn reverse(&mut self) {
+        let mut lo = 0;
+        let mut hi = self.words.len();
+        while lo < hi {
+            hi -= 1;
+            if lo == hi {
+                self.words[lo] = self.words[lo].reverse_bits();
+                break;
+            }
+            let a = self.words[lo].reverse_bits();
+            let b = self.words[hi].reverse_bits();
+            self.words[lo] = b;
+            self.words[hi] = a;
+            lo += 1;
+        }
     }
 
     /// Number of clear bits within [`len_bits`](BitSlice::len_bits).
@@ -203,50 +238,5 @@ fn select_in_word<W: Word>(w: W, n: usize) -> usize {
 /// Position of the set bit of rank `n` in `x`, `n < x.count_ones()`.
 #[inline]
 fn select_u64(x: u64, n: usize) -> usize {
-    // BMI2: deposit a single bit at the `n`-th set position.
-    #[cfg(all(target_arch = "x86_64", target_feature = "bmi2"))]
-    {
-        // SAFETY: the intrinsic needs BMI2, which this build enables.
-        unsafe { core::arch::x86_64::_pdep_u64(1 << n, x).trailing_zeros() as usize }
-    }
-    // Elsewhere, broadword: running byte popcounts locate the byte without a
-    // loop, and a table finishes inside it.
-    #[cfg(not(all(target_arch = "x86_64", target_feature = "bmi2")))]
-    {
-        const L8: u64 = 0x0101_0101_0101_0101;
-        const H8: u64 = 0x8080_8080_8080_8080;
-        let mut s = x - ((x >> 1) & 0x5555_5555_5555_5555);
-        s = (s & 0x3333_3333_3333_3333) + ((s >> 2) & 0x3333_3333_3333_3333);
-        s = (s + (s >> 4)) & 0x0f0f_0f0f_0f0f_0f0f;
-        // byte k holds the number of set bits in bytes 0..=k (at most 64)
-        let cum = s.wrapping_mul(L8);
-        // high bit of byte k set when `n >= cum[k]`: those bytes come before
-        // the one we want (no borrow crosses a byte: `cum[k] <= 64 < 128`)
-        let before = (((n as u64 * L8) | H8) - cum) & H8;
-        let byte = ((before >> 7).wrapping_mul(L8) >> 56) as usize;
-        let below = ((cum << 8) >> (8 * byte)) as usize & 0xff;
-        let b = (x >> (8 * byte)) as usize & 0xff;
-        8 * byte + SELECT_IN_BYTE[b * 8 + (n - below)] as usize
-    }
+    crate::arch::select_u64(x, n)
 }
-
-/// `SELECT_IN_BYTE[b * 8 + r]`: position of the set bit of rank `r` in the
-/// byte `b`.
-#[cfg(not(all(target_arch = "x86_64", target_feature = "bmi2")))]
-static SELECT_IN_BYTE: [u8; 2048] = {
-    let mut t = [0u8; 2048];
-    let mut b = 0;
-    while b < 256 {
-        let mut r = 0;
-        let mut pos = 0;
-        while pos < 8 {
-            if b & (1 << pos) != 0 {
-                t[b * 8 + r] = pos as u8;
-                r += 1;
-            }
-            pos += 1;
-        }
-        b += 1;
-    }
-    t
-};

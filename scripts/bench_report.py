@@ -22,8 +22,44 @@ SIZES = [256, 4096, 262144]
 ORDER = [
     "count_ones", "first_set", "is_zero", "iter_ones_dense", "iter_ones_sparse",
     "and", "or", "xor", "get_batch1024", "write_batch1024", "set_range",
-    "get_field24_batch1024",
+    "get_field24_batch1024", "reverse",
 ]
+FUSED = "vbitmap (fused, a op b into dst)"
+# `bitmap` and `compare` share Criterion's output directory. Keep collection
+# scoped to the cases actually defined by `benches/compare.rs` so a previous
+# run of the single-crate harness cannot add rows to the comparison report.
+COMPARE_FUNCTIONS = {
+    "count_ones": {"vbitmap", "fixedbitset", "bit-vec", "bit-set", "bitvec", "bitmaps"},
+    "first_set": {
+        "vbitmap", "fixedbitset", "bit-vec (iter().position)", "bit-set", "bitvec", "bitmaps",
+    },
+    "is_zero": {"vbitmap", "fixedbitset", "bit-vec", "bit-set", "bitvec", "bitmaps"},
+    "iter_ones_dense": {
+        "vbitmap", "fixedbitset", "bit-vec (iter+filter)", "bit-set", "bitvec", "bitmaps",
+    },
+    "iter_ones_sparse": {
+        "vbitmap", "fixedbitset", "bit-vec (iter+filter)", "bit-set", "bitvec", "bitmaps",
+    },
+    "and": {
+        "vbitmap", FUSED, "fixedbitset", "bit-vec", "bit-set", "bitvec",
+    },
+    "or": {
+        "vbitmap", "vbitmap (fused, a op b into dst)",
+        "fixedbitset", "bit-vec", "bit-set", "bitvec",
+    },
+    "xor": {
+        "vbitmap", "vbitmap (fused, a op b into dst)",
+        "fixedbitset", "bit-vec", "bit-set", "bitvec",
+    },
+    "get_batch1024": {"vbitmap", "fixedbitset", "bit-vec", "bit-set", "bitvec", "bv"},
+    "write_batch1024": {
+        "vbitmap (set)", "vbitmap (BitSlice set/unset)", "fixedbitset", "bit-vec",
+        "bit-set", "bitvec", "bv",
+    },
+    "set_range": {"vbitmap", "fixedbitset", "bitvec (slice.fill)"},
+    "get_field24_batch1024": {"vbitmap", "bitvec (load_le)", "bv (get_bits)"},
+    "reverse": {"vbitmap", "bitvec"},
+}
 TITLES = {
     "count_ones": "Population count",
     "first_set": "First set bit (worst case: only the last bit is set)",
@@ -37,8 +73,8 @@ TITLES = {
     "write_batch1024": "1024 random bit writes (alternating a set pass and a clear pass)",
     "set_range": "Set or clear a range of bits",
     "get_field24_batch1024": "1024 random 24-bit field reads",
+    "reverse": "Reverse the order of all stored bits",
 }
-FUSED = "vbitmap (fused, a op b into dst)"
 NOTES = {
     "first_set": "`bit-vec` has no search, so it is measured as `iter().position(..)`.",
     "iter_ones_dense": "`bit-vec` has no set-bit iterator, so it is measured as `iter().enumerate().filter(..)`.",
@@ -72,6 +108,8 @@ def collect(out):
     root = pathlib.Path("target/criterion")
     for bench in root.glob("*/*/*/new/benchmark.json"):
         info = json.loads(bench.read_text())
+        if info["function_id"] not in COMPARE_FUNCTIONS.get(info["group_id"], set()):
+            continue
         est = json.loads((bench.parent / "estimates.json").read_text())
         res[f"{info['group_id']}|{info['function_id']}|{info['value_str']}"] = est["median"]["point_estimate"]
     pathlib.Path(out).write_text(json.dumps(res, indent=1, sort_keys=True))

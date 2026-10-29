@@ -5,13 +5,25 @@ use core::ops::{
 
 use alloc::vec::Vec;
 
-use crate::slice::nonzero_len;
 use crate::storage::AlignedWords;
 use crate::{BitSlice, Word};
 
 /// Growable bitmap, a vector of [`Word`]s.
 ///
-/// All read-only queries are on [`BitSlice`], reachable through `Deref`.
+/// All read-only queries and fixed-length operations are on [`BitSlice`],
+/// reachable through `Deref`. `Bitmap` defines an inherent method with the same
+/// name where its growable storage needs different behavior: for example,
+/// [`Bitmap::set`] and [`Bitmap::toggle`] grow, while [`BitSlice::set`] and
+/// [`BitSlice::toggle`] panic out of bounds. [`Bitmap::shift_left`] grows to
+/// preserve shifted bits and [`Bitmap::shift_right`] trims; the `BitSlice`
+/// versions keep the current number of words. `ArrayBitmap` always uses the
+/// fixed-length `BitSlice` behavior.
+///
+/// The named [`Bitmap::and`], [`Bitmap::or`] and [`Bitmap::xor`] methods are
+/// also available as the standard assignment operators (`&=`, `|=`, `^=`).
+/// The named methods accept any [`BitSlice`]; the operators are convenient
+/// when the right operand is a [`Bitmap`]. Use the `_from` methods to write a
+/// result into a destination in one pass, or `dup_*` to allocate a result.
 #[derive(Clone, Default)]
 pub struct Bitmap<W: Word = usize> {
     pub(crate) words: AlignedWords<W>,
@@ -195,7 +207,7 @@ impl<W: Word> Bitmap<W> {
         if self.words.last().is_none_or(|&w| w != W::ZERO) {
             return;
         }
-        let n = nonzero_len(&self.words);
+        let n = crate::arch::nonzero_len(&self.words);
         self.words.truncate(n);
     }
 
@@ -218,7 +230,7 @@ impl<W: Word> Bitmap<W> {
         self.validate_word(i0);
         // SAFETY: validate_word made `i0` a valid index.
         let w = unsafe { self.words.get_unchecked_mut(i0) };
-        *w = crate::slice::in_register(*w) | W::bit(i % W::BITS);
+        *w = crate::arch::in_register(*w) | W::bit(i % W::BITS);
     }
 
     /// Clear bit `i`. Bits past the end are already zero, so nothing happens
@@ -244,7 +256,7 @@ impl<W: Word> Bitmap<W> {
     pub fn unset(&mut self, i: usize) {
         let i0 = i / W::BITS;
         if let Some(w) = self.words.get_mut(i0) {
-            *w = crate::slice::in_register(*w) & !W::bit(i % W::BITS);
+            *w = crate::arch::in_register(*w) & !W::bit(i % W::BITS);
         }
     }
 
@@ -363,61 +375,21 @@ impl<W: Word> Bitmap<W> {
         let (b0, b1) = (end / W::BITS, end % W::BITS);
         self.validate_word(b0);
 
-        #[inline(always)]
-        fn apply<W: Word>(w: &mut W, mask: W, value: bool) {
-            if value {
-                *w = *w | mask;
-            } else {
-                *w = *w & !mask;
-            }
-        }
-
         if a0 == b0 {
-            apply(&mut self.words[a0], W::low_mask(n_bits) << a1, value);
+            let mask = W::low_mask(n_bits) << a1;
+            if value {
+                self.words[a0] = self.words[a0] | mask;
+            } else {
+                self.words[a0] = self.words[a0] & !mask;
+            }
             return;
         }
-        apply(&mut self.words[a0], W::ONES << a1, value);
-        // x86-64: both edge words before the middle. glibc's memset ends a
-        // short piece with a masked vector store whose 64-byte footprint can
-        // cover word `b0`, and a load of `b0` right after it is not forwarded
-        // and waits for the store to commit.
-        #[cfg(target_arch = "x86_64")]
-        apply(&mut self.words[b0], W::ONES >> (W::BITS - b1 - 1), value);
-        // `fill` becomes a libc memset call, which costs more than the stores
-        // for a few words: write those out directly.
-        let f = if value { W::ONES } else { W::ZERO };
-        match &mut self.words[a0 + 1..b0] {
-            [] => {}
-            [a] => *a = f,
-            [a, b] => {
-                *a = f;
-                *b = f;
-            }
-            [a, b, c] => {
-                *a = f;
-                *b = f;
-                *c = f;
-            }
-            [a, b, c, d] => {
-                *a = f;
-                *b = f;
-                *c = f;
-                *d = f;
-            }
-            mid => {
-                // All zeros or all ones is a byte pattern, so this is a
-                // plain memset whatever the word size.
-                let byte = if value { 0xFF } else { 0 };
-                // SAFETY: `mid` is a valid, exclusively borrowed slice of
-                // integers, for which every byte pattern is a valid value.
-                unsafe { fill_bytes(mid.as_mut_ptr(), byte, mid.len()) };
-            }
-        }
-        #[cfg(not(target_arch = "x86_64"))]
-        apply(&mut self.words[b0], W::ONES >> (W::BITS - b1 - 1), value);
+        crate::arch::fill_region(&mut self.words, a0, a1, b0, b1, value);
     }
 
-    /// `self &= other`, trims.
+    /// Intersect with `other` in place (`self &= other`); trims trailing zero
+    /// words. This is the named-method form of `&=` and accepts a [`BitSlice`]
+    /// as the right operand.
     ///
     /// # Examples
     ///
@@ -457,7 +429,9 @@ impl<W: Word> Bitmap<W> {
         self.trim();
     }
 
-    /// `self |= other`, grows, no trim.
+    /// Union with `other` in place (`self |= other`); grows to the longer
+    /// operand and does not trim. This is the named-method form of `|=` and
+    /// accepts a [`BitSlice`] as the right operand.
     ///
     /// # Examples
     ///
@@ -478,7 +452,10 @@ impl<W: Word> Bitmap<W> {
         }
     }
 
-    /// `self ^= other`, grows, trims.
+    /// Symmetric difference with `other` in place (`self ^= other`); grows to
+    /// the longer operand and trims trailing zero words. This is the
+    /// named-method form of `^=` and accepts a [`BitSlice`] as the right
+    /// operand.
     ///
     /// # Examples
     ///
@@ -500,50 +477,35 @@ impl<W: Word> Bitmap<W> {
         self.trim();
     }
 
-    /// `self & other` as a new bitmap.
+    /// Allocate `self & other` as a new bitmap. For two `Bitmap` operands,
+    /// this is the named-method equivalent of `&`.
     pub fn dup_and(&self, other: &BitSlice<W>) -> Self {
-        let n = self.words.len().min(other.words.len());
-        let mut r = Self::from_slice(&self.words[..n]);
-        for (a, &b) in r.words.iter_mut().zip(&other.words) {
-            *a = *a & b;
-        }
-        r.trim();
+        let mut r = Self::new();
+        r.and_from(self, other);
         r
     }
 
-    /// `self & !other` as a new bitmap.
+    /// Allocate `self & !other` as a new bitmap. There is no standard
+    /// bitwise operator for this difference operation.
     pub fn dup_andnot(&self, other: &BitSlice<W>) -> Self {
-        let mut r = self.clone();
-        r.andnot(other);
+        let mut r = Self::new();
+        r.andnot_from(self, other);
         r
     }
 
-    /// `self | other` as a new bitmap.
+    /// Allocate `self | other` as a new bitmap. For two `Bitmap` operands,
+    /// this is the named-method equivalent of `|`.
     pub fn dup_or(&self, other: &BitSlice<W>) -> Self {
-        let (long, short) = if self.words.len() >= other.words.len() {
-            (&self.words[..], &other.words[..])
-        } else {
-            (&other.words[..], &self.words[..])
-        };
-        let mut r = Self::from_slice(long);
-        for (a, &b) in r.words.iter_mut().zip(short) {
-            *a = *a | b;
-        }
+        let mut r = Self::new();
+        r.or_from(self, other);
         r
     }
 
-    /// `self ^ other` as a new bitmap.
+    /// Allocate `self ^ other` as a new bitmap. For two `Bitmap` operands,
+    /// this is the named-method equivalent of `^`.
     pub fn dup_xor(&self, other: &BitSlice<W>) -> Self {
-        let (long, short) = if self.words.len() >= other.words.len() {
-            (&self.words[..], &other.words[..])
-        } else {
-            (&other.words[..], &self.words[..])
-        };
-        let mut r = Self::from_slice(long);
-        for (a, &b) in r.words.iter_mut().zip(short) {
-            *a = *a ^ b;
-        }
-        r.trim();
+        let mut r = Self::new();
+        r.xor_from(self, other);
         r
     }
 
@@ -613,14 +575,7 @@ impl<W: Word> Bitmap<W> {
             for ((d, &x), &y) in head.iter_mut().zip(long).zip(short) {
                 *d = f(x, y);
             }
-            // Equal lengths are the common case. On x86-64 the call to memcpy
-            // for an empty tail is a fifth of a short bitmap's time, so skip
-            // it; on aarch64 the check measured slower at 4096 bits.
-            #[cfg(target_arch = "x86_64")]
-            if tail.is_empty() {
-                return;
-            }
-            tail.copy_from_slice(&long[short.len()..]);
+            crate::arch::copy_tail(tail, &long[short.len()..]);
         });
     }
 
@@ -643,8 +598,9 @@ impl<W: Word> Bitmap<W> {
         }
     }
 
-    /// Word `i / BITS &= 1 << (i % BITS)`, trims. The immediate operators
-    /// act on the whole word, not just on bit `i`.
+    /// Keep only bit `i` in its containing word (`word &= 1 << (i % BITS)`),
+    /// then trim if that word became zero. Other bits in the word are cleared;
+    /// use [`Bitmap::unset`] to clear only bit `i`.
     pub fn andi(&mut self, i: usize) {
         // Past the end the word is zero already: nothing to do.
         if i / W::BITS >= self.words.len() {
@@ -655,7 +611,9 @@ impl<W: Word> Bitmap<W> {
         }
     }
 
-    /// Word `&= !(1 << i)`, trims.
+    /// Clear bit `i` with a word-level AND-NOT (`word &= !(1 << (i % BITS))`),
+    /// then trim if the last word became zero. Unlike [`Bitmap::andi`], this
+    /// preserves the other bits in the word.
     pub fn andnoti(&mut self, i: usize) {
         if i / W::BITS >= self.words.len() {
             return;
@@ -665,29 +623,35 @@ impl<W: Word> Bitmap<W> {
         }
     }
 
-    /// Word `|= 1 << i`.
+    /// Set bit `i` with a word-level OR (`word |= 1 << (i % BITS)`). This has
+    /// the same bit value effect as [`Bitmap::set`].
     pub fn ori(&mut self, i: usize) {
         self.imm(i, |a, b| a | b);
     }
 
-    /// Word `^= 1 << i`, trims.
+    /// Toggle bit `i` with a word-level XOR (`word ^= 1 << (i % BITS)`), then
+    /// trim if the last word became zero. This has the same bit value effect
+    /// as [`Bitmap::toggle`].
     pub fn xori(&mut self, i: usize) {
         if self.imm(i, |a, b| a ^ b) == W::ZERO {
             self.trim_if_last(i);
         }
     }
 
-    /// As [`Bitmap::andi`] without trimming.
+    /// As [`Bitmap::andi`] without trimming. This can preserve a trailing zero
+    /// word; the bit value is unchanged by that storage difference.
     pub fn andi_notrim(&mut self, i: usize) {
         self.imm(i, |a, b| a & b);
     }
 
-    /// As [`Bitmap::andnoti`] without trimming.
+    /// As [`Bitmap::andnoti`] without trimming. This can preserve a trailing
+    /// zero word; the bit value is unchanged by that storage difference.
     pub fn andnoti_notrim(&mut self, i: usize) {
         self.imm(i, |a, b| a & !b);
     }
 
-    /// As [`Bitmap::xori`] without trimming.
+    /// As [`Bitmap::xori`] without trimming. This can preserve a trailing zero
+    /// word; the bit value is unchanged by that storage difference.
     pub fn xori_notrim(&mut self, i: usize) {
         self.imm(i, |a, b| a ^ b);
     }
@@ -885,39 +849,4 @@ impl<W: Word> From<Vec<W>> for Bitmap<W> {
     fn from(words: Vec<W>) -> Self {
         Self::from_words(words)
     }
-}
-
-/// `ptr::write_bytes(dst, byte, n)`, split at a page boundary on x86-64.
-///
-/// glibc's memset covers a short range with overlapping vector stores from
-/// both ends. The words sit 8 bytes past a cache line, so one of those stores
-/// can straddle a 4 KiB page, and a page-split store is slow on recent Intel
-/// cores: it doubled `set_region` over 4096 bits. Two calls that each stay
-/// inside one page cost less.
-///
-/// # Safety
-/// As for `ptr::write_bytes`.
-#[inline(always)]
-unsafe fn fill_bytes<W: Word>(dst: *mut W, byte: u8, n: usize) {
-    #[cfg(target_arch = "x86_64")]
-    {
-        const PAGE: usize = 4096;
-        let bytes = n * core::mem::size_of::<W>();
-        let start = dst as usize;
-        let split = (start | (PAGE - 1)) + 1;
-        // only short ranges: a long one runs an aligned store loop in which
-        // the unaligned ends weigh little
-        if bytes <= PAGE && split < start + bytes {
-            // `split` is page aligned and `dst` word aligned, so this is exact
-            let head = (split - start) / core::mem::size_of::<W>();
-            // SAFETY: both pieces lie within the caller's `n` words.
-            unsafe {
-                core::ptr::write_bytes(dst, byte, head);
-                core::ptr::write_bytes(dst.add(head), byte, n - head);
-            }
-            return;
-        }
-    }
-    // SAFETY: forwarded from the caller.
-    unsafe { core::ptr::write_bytes(dst, byte, n) };
 }

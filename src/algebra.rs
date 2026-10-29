@@ -23,14 +23,11 @@ pub(crate) trait Op: Copy + Default {
     const KEEP_B: bool;
     /// The same operator on 16 bytes.
     #[cfg(target_arch = "aarch64")]
-    fn neon(
-        a: core::arch::aarch64::uint8x16_t,
-        b: core::arch::aarch64::uint8x16_t,
-    ) -> core::arch::aarch64::uint8x16_t;
+    const BYTE_OP: crate::arch::ByteOp;
 }
 
 macro_rules! op {
-    ($(#[$doc:meta])* $name:ident, $a:ident, $b:ident, $word:expr, $keep_a:expr, $keep_b:expr, $neon:ident) => {
+    ($(#[$doc:meta])* $name:ident, $a:ident, $b:ident, $word:expr, $keep_a:expr, $keep_b:expr, $byte_op:ident) => {
         $(#[$doc])*
         #[derive(Clone, Copy, Debug, Default)]
         pub(crate) struct $name;
@@ -42,33 +39,26 @@ macro_rules! op {
             const KEEP_A: bool = $keep_a;
             const KEEP_B: bool = $keep_b;
             #[cfg(target_arch = "aarch64")]
-            #[inline(always)]
-            fn neon(
-                $a: core::arch::aarch64::uint8x16_t,
-                $b: core::arch::aarch64::uint8x16_t,
-            ) -> core::arch::aarch64::uint8x16_t {
-                // SAFETY: NEON is part of the aarch64 baseline.
-                unsafe { core::arch::aarch64::$neon($a, $b) }
-            }
+            const BYTE_OP: crate::arch::ByteOp = crate::arch::ByteOp::$byte_op;
         }
     };
 }
 
 op!(
     /// `a & b`, see [`BitSlice::iter_and`].
-    And, a, b, a & b, false, false, vandq_u8
+    And, a, b, a & b, false, false, And
 );
 op!(
     /// `a | b`, see [`BitSlice::iter_or`].
-    Or, a, b, a | b, true, true, vorrq_u8
+    Or, a, b, a | b, true, true, Or
 );
 op!(
     /// `a ^ b`, see [`BitSlice::iter_xor`].
-    Xor, a, b, a ^ b, true, true, veorq_u8
+    Xor, a, b, a ^ b, true, true, Xor
 );
 op!(
     /// `a & !b`, see [`BitSlice::iter_andnot`].
-    AndNot, a, b, a & !b, true, false, vbicq_u8
+    AndNot, a, b, a & !b, true, false, AndNot
 );
 
 /// Is `a op b` non-zero in any word both operands have? Eight words per test
@@ -114,7 +104,7 @@ fn count_common<W: Word, O: Op>(a: &[W], b: &[W]) -> usize {
                 core::slice::from_raw_parts(b.as_ptr().cast::<u8>(), len),
             )
         };
-        return crate::arch::popcount_bytes2(x, y, O::neon);
+        return crate::arch::popcount_bytes2(x, y, O::BYTE_OP);
     }
     a.iter()
         .zip(b)
@@ -138,7 +128,8 @@ impl<W: Word> BitSlice<W> {
     #[inline]
     pub fn is_subset(&self, other: &BitSlice<W>) -> bool {
         let n = other.words.len().min(self.words.len());
-        !any_common::<W, AndNot>(&self.words, &other.words) && BitSlice::new(&self.words[n..]).is_zero()
+        !any_common::<W, AndNot>(&self.words, &other.words)
+            && BitSlice::new(&self.words[n..]).is_zero()
     }
 
     /// Is every set bit of `other` also set in `self`?
