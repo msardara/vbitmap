@@ -31,7 +31,9 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
           token: ${{ secrets.RELEASE_PLZ_TOKEN || github.token }}
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions-rust-lang/setup-rust-toolchain@v2
+        with:
+          toolchain: stable
       - name: Open or update the release PR
         uses: release-plz/action@v0.5
         with:
@@ -54,7 +56,9 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions-rust-lang/setup-rust-toolchain@v2
+        with:
+          toolchain: stable
       # release-plz exchanges its OIDC identity for a crates.io token itself.
       - name: Publish after a release PR is merged
         uses: release-plz/action@v0.5
