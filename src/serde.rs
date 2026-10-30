@@ -102,7 +102,10 @@ impl<W: Word, const N: usize> ArrayVisitor<W, N> {
         if k < b.bytes() {
             put_byte(b.as_words_mut(), k, x);
         } else if x != 0 {
-            return Err(E::invalid_length(k + 1, &"no set bit past the bitmap's size"));
+            return Err(E::invalid_length(
+                k + 1,
+                &"no set bit past the bitmap's size",
+            ));
         }
         Ok(())
     }
@@ -112,7 +115,10 @@ impl<'de, W: Word, const N: usize> Visitor<'de> for ArrayVisitor<W, N> {
     type Value = ArrayBitmap<W, N>;
 
     fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "the little-endian bytes of a bitmap of at most {N} words")
+        write!(
+            f,
+            "the little-endian bytes of a bitmap of at most {N} words"
+        )
     }
 
     fn visit_bytes<E: de::Error>(self, v: &[u8]) -> Result<Self::Value, E> {

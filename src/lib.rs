@@ -332,12 +332,14 @@ extern crate alloc;
 struct ReadmeDoctests;
 
 mod algebra;
-mod array;
 mod arch;
-mod bits;
+mod array;
 #[cfg(has_alloc)]
 mod bitmap;
+mod bits;
 mod iter;
+#[cfg(feature = "serde")]
+mod serde;
 #[cfg(has_alloc)]
 mod shape;
 mod shift;
@@ -347,9 +349,9 @@ mod storage;
 mod text;
 mod word;
 
+pub use array::ArrayBitmap;
 #[cfg(has_alloc)]
 pub use bitmap::Bitmap;
-pub use array::ArrayBitmap;
 pub use iter::{Ones, Zeros};
 pub use slice::BitSlice;
 pub use text::ParseError;
