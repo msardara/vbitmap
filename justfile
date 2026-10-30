@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: MIT OR Apache-2.0
-# Quality gates for vbitmap. `just` lists the recipes, `just check` runs them all.
+# Quality gates shared by local development and CI. Requires cargo-hack.
+# `just` lists the recipes, `just check` runs them all.
 
 set shell := ["bash", "-euo", "pipefail", "-c"]
 
@@ -9,35 +10,42 @@ no_std_target := "thumbv7em-none-eabihf"
 default:
     @just --list
 
-# Everything CI should run.
-[doc("Everything CI should run")]
-check: fmt clippy test doc-check examples no-std coverage audit
+# All CI recipes, plus local coverage and dependency auditing.
+[doc("All quality gates, including coverage and dependency auditing")]
+check: fmt clippy test doc-check examples no-std msrv test-native package coverage audit
 
 # Formatting must be clean (use `cargo fmt` to fix).
 [doc("Check formatting (cargo fmt fixes it)")]
 fmt:
     cargo fmt --all -- --check
 
-# Clippy with warnings denied, for every feature combination: default (std),
-# `no_std` (core only; benches need `alloc`) and `no_std` + `alloc` (the
-# `no_std` example is left out there: with `Bitmap` linked it would need a
-# global allocator).
+# Clippy with warnings denied. Check the complete feature powerset on the
+# library and tests, then benchmarks and examples in their supported modes.
 [doc("Clippy with warnings denied, for every feature combination")]
 clippy:
-    cargo clippy --all-targets -- -D warnings
-    cargo clippy --lib --tests --examples --features no_std -- -D warnings
-    cargo clippy --lib --tests --features no_std,alloc -- -D warnings
+    cargo hack clippy --feature-powerset --lib --tests -- -D warnings
+    cargo clippy --all-targets --features serde -- -D warnings
+    cargo clippy --example no_std --features no_std -- -D warnings
 
 # Tests for every feature combination.
 [doc("Tests and doc tests for every feature combination")]
 test:
-    cargo test
-    # `cargo test` also builds examples; the `no_std` example is a real
-    # no_std binary, so under the `no_std` feature only lib, tests and docs.
-    cargo test --lib --tests --features no_std,alloc
-    cargo test --doc --features no_std,alloc
-    cargo test --lib --tests --features no_std
-    cargo test --doc --features no_std
+    # Selecting lib/tests avoids building the allocator-free example with alloc.
+    cargo hack test --feature-powerset --lib --tests
+    cargo hack test --feature-powerset --doc
+
+[doc("Check every feature combination on the Rust version declared in Cargo.toml")]
+msrv:
+    cargo hack check --rust-version --feature-powerset --no-dev-deps --lib
+
+[doc("Test native CPU paths in release mode, with default and all features")]
+test-native:
+    RUSTFLAGS="-C target-cpu=native" cargo test --release --lib --tests
+    RUSTFLAGS="-C target-cpu=native" cargo test --release --lib --tests --all-features
+
+[doc("Verify the crate package; optional arguments are passed to cargo package")]
+package *args:
+    cargo package {{args}}
 
 # Build the API documentation and open it in the browser (target/doc). Warnings
 # (broken links, bad code blocks) are errors.
@@ -49,9 +57,7 @@ doc:
 # its examples run as doc tests under `just test`.
 [doc("Documentation must build without warnings, for every feature combination")]
 doc-check:
-    RUSTDOCFLAGS="-D warnings" cargo doc --no-deps
-    RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --features no_std,alloc
-    RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --features no_std
+    RUSTDOCFLAGS="-D warnings" cargo hack doc --feature-powerset --no-deps
 
 # Run every example; each one asserts what it prints. The last one is a real
 # `#![no_std]` binary.
@@ -69,8 +75,8 @@ examples:
 [doc("Build for a target with no std at all")]
 no-std:
     rustup target add {{ no_std_target }}
-    cargo build --release --features no_std --target {{ no_std_target }}
-    cargo build --release --features no_std,alloc --target {{ no_std_target }}
+    cargo build --release --lib --target {{ no_std_target }} --no-default-features --features no_std
+    cargo hack build --release --lib --target {{ no_std_target }} --feature-powerset --include-features alloc,serde --features no_std
 
 #
 # llvm-cov's own line summary counts generic code once per word type, so
@@ -85,8 +91,7 @@ coverage:
     cargo llvm-cov report --summary-only
     awk -F'[:,]' '/^DA:/ { total++; if ($3 == 0) { missed++; print "uncovered: " file ":" $2 } } /^SF:/ { file = substr($0, 4) } END { printf "source lines: %d, uncovered: %d\n", total, missed; exit (missed > 0) }' target/lcov.info
 
-# Known vulnerabilities in the dependency tree (cargo-audit). The crate has
-# no dependencies; the dev-dependencies (criterion, fixedbitset) are covered.
+# Known vulnerabilities in the dependency tree, including optional and dev dependencies.
 [doc("Known vulnerabilities in the dependency tree (cargo-audit)")]
 audit:
     test -f Cargo.lock || cargo generate-lockfile

@@ -188,9 +188,10 @@ just examples          # run them all
 ## Tests and benchmarks
 
 ```sh
-just check                        # fmt, clippy, tests, no_std build, coverage, audit
-cargo test --release
-cargo bench --bench bitmap        # Bitmap<u64> vs fixedbitset, u32/u64/u128 word sizes
+just check                        # all quality gates, including coverage and audit
+just test                         # tests and doctests for every feature combination
+just test-native                  # optimized native CPU tests
+just bench                        # Criterion benchmarks
 just compare                      # vs fixedbitset, bit-vec, bit-set, bitvec, bitmaps, bv
 RUSTFLAGS="-C target-cpu=native" just compare
 ```
@@ -202,6 +203,9 @@ through `.github/workflows/release-plz.yml`; publishing waits for all checks to
 pass. CI checks formatting, Clippy, docs and packaging, uses `cargo hack` to test
 every feature combination on Linux, macOS and Windows, checks Rust 1.85 and a
 bare-metal target, and runs optimized native CPU tests on Linux and macOS.
+All CI checks call recipes in `justfile`, so the same commands run locally.
+Install `just` and `cargo-hack` to run the feature checks; `just check` also
+requires `cargo-llvm-cov` and `cargo-audit` for its coverage and audit recipes.
 
 After the first manual `cargo publish`, configure the following once:
 

@@ -29,11 +29,9 @@ jobs:
           toolchain: stable
       - uses: taiki-e/install-action@v2
         with:
-          tool: cargo-hack
+          tool: just,cargo-hack
       - name: Test every feature combination
-        run: cargo hack test --feature-powerset --lib --tests
-      - name: Test documentation examples for every feature combination
-        run: cargo hack test --feature-powerset --doc
+        run: just test
 
   quality:
     name: Formatting, Clippy, docs and packaging
@@ -49,28 +47,17 @@ jobs:
           components: rustfmt, clippy
       - uses: taiki-e/install-action@v2
         with:
-          tool: cargo-hack
+          tool: just,cargo-hack
       - name: Check formatting
-        run: cargo fmt --all -- --check
+        run: just fmt
       - name: Lint every feature combination
-        run: cargo hack clippy --feature-powerset --lib --tests -- -D warnings
-      - name: Lint benchmarks and hosted examples
-        run: cargo clippy --all-targets --features serde -- -D warnings
-      - name: Lint the standalone no_std example
-        run: cargo clippy --example no_std --features no_std -- -D warnings
+        run: just clippy
       - name: Build documentation for every feature combination
-        env:
-          RUSTDOCFLAGS: -D warnings
-        run: cargo hack doc --feature-powerset --no-deps
+        run: just doc-check
       - name: Run examples
-        shell: bash
-        run: |
-          for example in basic search logic fields text words; do
-            cargo run --example "$example"
-          done
-          cargo run --example no_std --features no_std
+        run: just examples
       - name: Verify crate packaging
-        run: cargo package
+        run: just package
 
   msrv:
     name: Minimum Rust version (1.85)
@@ -82,12 +69,12 @@ jobs:
           persist-credentials: false
       - uses: actions-rust-lang/setup-rust-toolchain@v2
         with:
-          toolchain: 1.85.0
+          toolchain: "1.85"
       - uses: taiki-e/install-action@v2
         with:
-          tool: cargo-hack
+          tool: just,cargo-hack
       - name: Check every feature combination without dev dependencies
-        run: cargo hack check --feature-powerset --no-dev-deps --lib
+        run: just msrv
 
   embedded:
     name: Bare-metal no_std
@@ -103,13 +90,9 @@ jobs:
           target: thumbv7em-none-eabihf
       - uses: taiki-e/install-action@v2
         with:
-          tool: cargo-hack
-      - name: Build without std or alloc
-        run: cargo build --release --lib --target thumbv7em-none-eabihf --no-default-features --features no_std
-      - name: Build no_std with every combination of alloc and serde
-        run: >-
-          cargo hack build --release --lib --target thumbv7em-none-eabihf
-          --feature-powerset --include-features alloc,serde --features no_std
+          tool: just,cargo-hack
+      - name: Build every bare-metal feature combination
+        run: just no-std
 
   optimized:
     name: Native CPU release tests (${{ matrix.os }})
@@ -119,8 +102,6 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-14]
-    env:
-      RUSTFLAGS: -C target-cpu=native
     steps:
       - uses: actions/checkout@v6
         with:
@@ -128,7 +109,8 @@ jobs:
       - uses: actions-rust-lang/setup-rust-toolchain@v2
         with:
           toolchain: stable
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: just
       - name: Test optimized native CPU paths
-        run: cargo test --release --lib --tests
-      - name: Test optimized native CPU paths with all features
-        run: cargo test --release --lib --tests --all-features
+        run: just test-native
