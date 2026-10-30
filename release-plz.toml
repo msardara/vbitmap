@@ -1,0 +1,4 @@
+[workspace]
+# Publish only after merging a release-plz PR, rather than on every commit.
+release_always = false
+git_release_enable = true

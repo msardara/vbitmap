@@ -9,7 +9,7 @@ repository = "https://github.com/msardara/vbitmap"
 description = "Fast growable bitmap over generic machine words, with zero-cost borrowed views"
 keywords = ["bitmap", "bitset", "bitvec"]
 categories = ["data-structures"]
-exclude = ["scripts", "justfile", "BENCHMARKS.md"]
+exclude = ["scripts", "justfile", "BENCHMARKS.md", ".github", "release-plz.toml"]
 
 [features]
 # With no features the crate uses `std` and everything is available.

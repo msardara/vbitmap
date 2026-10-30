@@ -1,0 +1,64 @@
+name: Release-plz
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  # Main-branch pushes run CI here; pull requests run ci.yml directly.
+  checks:
+    name: CI
+    uses: ./.github/workflows/ci.yml
+
+  release-pr:
+    name: Prepare release PR
+    needs: checks
+    if: github.repository == 'msardara/vbitmap'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write
+      pull-requests: write
+    concurrency:
+      group: release-plz-pr-${{ github.ref }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          token: ${{ secrets.RELEASE_PLZ_TOKEN || github.token }}
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Open or update the release PR
+        uses: release-plz/action@v0.5
+        with:
+          command: release-pr
+        env:
+          GITHUB_TOKEN: ${{ secrets.RELEASE_PLZ_TOKEN || github.token }}
+
+  release:
+    name: Publish crate and GitHub release
+    needs: checks
+    if: github.repository == 'msardara/vbitmap'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+      pull-requests: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      # release-plz exchanges its OIDC identity for a crates.io token itself.
+      - name: Publish after a release PR is merged
+        uses: release-plz/action@v0.5
+        with:
+          command: release
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
