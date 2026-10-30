@@ -18,7 +18,9 @@ compare ratios across machines, not nanoseconds.
   heap layouts (`LAYOUT_SHIFT`). Differences under about 5% are ties.
 * **Placement noise:** rows of a few nanoseconds move 10 to 30% with where the
   compiler puts a loop or the allocator puts a small bitmap, for any crate.
-* **Not like for like:** `bitmaps` only exists up to 1024 bits, so only at 256;
+* **Not like for like:** `bitmaps` supports fixed-size bitmaps up to 1024 bits.
+  Of our benchmark sizes (256, 4096 and 262144 bits), only 256 fits; the larger
+  sizes are marked `n/a`.
   `bit-vec` has no search or set-bit iterator (measured as `iter().position(..)`
   and `iter().enumerate().filter(..)`). `bit-vec` and `bit-set` use `usize`
   blocks (their default, `u32`, is slower).

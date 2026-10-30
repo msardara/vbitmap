@@ -82,6 +82,10 @@ Summary of those benchmarks against the dense crates (`fixedbitset`,
 tables in [BENCHMARKS.md](BENCHMARKS.md) give nanoseconds per call and the
 ratio to vbitmap; see there for how they are measured.
 
+`bitmaps` supports fixed-size bitmaps up to 1,024 bits. Our benchmark sizes are
+256, 4,096 and 262,144 bits, so only the 256-bit case fits; its larger-size
+results are marked `n/a`.
+
 | | vbitmap fastest (others at least 1.05x slower) | within 5% | 5 to 10% slower | more than 10% slower |
 |---|---|---|---|---|
 | arm64 (Apple M4) | 32 of 36 | 3 | 1 | 0 |
